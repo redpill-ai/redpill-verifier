@@ -22,6 +22,22 @@ def fetch_report(model, nonce):
     return requests.get(url, timeout=30).json()
 
 
+def select_attestation(report):
+    """Normalize legacy and gateway-wrapped attestation responses."""
+    for key in ("model_attestations", "all_attestations"):
+        attestations = report.get(key)
+        if isinstance(attestations, list):
+            for attestation in attestations:
+                if isinstance(attestation, dict) and "signing_address" in attestation:
+                    return attestation
+
+    container = report.get("gateway_attestation")
+    if isinstance(container, dict):
+        return container
+
+    return report
+
+
 def fetch_nvidia_verification(payload):
     """Submit GPU evidence to NVIDIA NRAS for verification."""
     return requests.post(GPU_VERIFIER_API, json=payload, timeout=30).json()
@@ -193,8 +209,13 @@ def main() -> None:
     request_nonce = secrets.token_hex(32)
     report = fetch_report(args.model, request_nonce)
 
-    # Handle both single attestation and multi-node response formats
-    attestation = report.get("all_attestations", [report])[0] if report.get("all_attestations") else report
+    if "error" in report:
+        raise RuntimeError(f"Attestation API error: {report['error']}")
+
+    attestation = select_attestation(report)
+
+    if "signing_address" not in attestation:
+        raise KeyError(f"Missing signing_address in attestation payload. Top-level keys: {sorted(report.keys())}")
 
     print("\nSigning address:", attestation["signing_address"])
     print("Request nonce:", request_nonce)
