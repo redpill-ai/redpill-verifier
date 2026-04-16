@@ -1,104 +1,77 @@
 ---
 name: verify-tee
-description: Verify TEE attestation and signatures for Redpill Confidential AI models. Runs the full trust chain — chat completion, ECDSA signature verification, Intel TDX + NVIDIA GPU attestation, and on-chain DCAP verification via Automata smart contracts. Use when the user wants to verify a model's TEE, check attestation, test signatures, or store on-chain proofs.
-allowed-tools: Bash(python3 *), Bash(pip3 install *), Bash(cd /tmp/redpill-verifier *)
+description: Verify TEE attestation for Redpill/Phala Confidential AI. Supports Phala, NearAI, Tinfoil, Chutes providers. Two modes — light (no Docker) and deep (dstack-verifier + QEMU). Includes on-chain DCAP verification, ECDSA signatures, and proof storage. Use when verifying models, checking attestation, testing signatures, or storing on-chain proofs.
+allowed-tools: Bash(node *), Bash(npx *), Bash(npm *), Bash(docker *), Bash(cd /tmp/redpill-verifier *)
 ---
 
-# Verify TEE from Redpill
+# Verify TEE — RedPill Unified Verifier
 
-Verify the full Confidential AI trust chain for any Redpill TEE-protected model.
+Verify Confidential AI responses from any provider (Phala, NearAI, Tinfoil, Chutes).
 
 ## Setup
 
-The verifier tools live in a separate repo. Clone if not already present:
-
 ```bash
 test -d /tmp/redpill-verifier || gh repo clone redpill-ai/redpill-verifier /tmp/redpill-verifier
-cd /tmp/redpill-verifier && pip3 install -r requirements.txt
+cd /tmp/redpill-verifier/js && npm install && npm run build
 ```
 
-## Available Verification Modes
+For deep mode (optional):
+```bash
+cd /tmp/redpill-verifier && docker compose up -d
+```
 
-### 1. Attestation Verification (No API key needed)
+## Commands
 
-Verifies TDX quote, GPU attestation, report data binding, compose manifest, Sigstore provenance, and on-chain DCAP.
+### 1. Verify a chat response (main use case)
 
 ```bash
-cd /tmp/redpill-verifier && python3 attestation_verifier.py --model <MODEL>
+cd /tmp/redpill-verifier/js && node dist/cli.js verify <chatId> --api-key <key> --model <model>
+```
+
+### 2. Verify attestation (no API key needed)
+
+```bash
+cd /tmp/redpill-verifier/js && node dist/cli.js attestation --model <model>
 ```
 
 Options:
-- `--model MODEL` — Model to verify (default: `phala/gpt-oss-120b`)
-- `--network NETWORK` — Automata network for on-chain verification: `automata-mainnet`, `automata-testnet`, `sepolia`, `holesky` (default: `automata-mainnet`)
-- `--skip-onchain` — Skip on-chain DCAP verification
+- `--model MODEL` — default: `phala/gpt-oss-120b`
+- `--deep` — force deep mode (Docker required)
+- `--light` — force light mode (no Docker)
+- `--network NETWORK` — `automata-mainnet`, `sepolia`, `holesky`
+- `--skip-onchain` — skip on-chain DCAP
 
-### 2. Signature Verification (Requires API_KEY)
-
-Sends a chat completion, fetches the ECDSA signature, verifies it, then runs full attestation.
-
-```bash
-cd /tmp/redpill-verifier && API_KEY=<key> python3 signature_verifier.py --model <MODEL>
-```
-
-### 3. On-Chain Proof — Verify Only (No API key, no wallet)
-
-Verifies a TDX quote trustlessly on-chain via Automata's DCAP smart contract.
+### 3. Store proof on-chain
 
 ```bash
-cd /tmp/redpill-verifier && python3 onchain_proof.py --model <MODEL> --network <NETWORK>
+cd /tmp/redpill-verifier/js && node dist/cli.js store --private-key <key> --proof-store <addr> --network sepolia
 ```
 
-### 4. On-Chain Proof — Store (Requires PRIVATE_KEY + gas)
-
-Verifies the TDX quote on-chain AND permanently stores the result in the RedpillProofStore contract.
+### 4. Look up proof
 
 ```bash
-cd /tmp/redpill-verifier && PRIVATE_KEY=<key> python3 onchain_proof.py --store \
-  --proof-store <PROOF_STORE_ADDRESS> --network <NETWORK> --model <MODEL>
+cd /tmp/redpill-verifier/js && node dist/cli.js lookup --quote-hash <hash> --proof-store <addr> --network sepolia
 ```
 
-### 5. On-Chain Proof — Lookup
+## Providers & Models
 
-Query a previously stored proof by its quote hash.
-
-```bash
-cd /tmp/redpill-verifier && python3 onchain_proof.py --lookup <QUOTE_HASH> \
-  --proof-store <PROOF_STORE_ADDRESS> --network <NETWORK>
-```
-
-## Available Phala Confidential Models
-
-To list currently available models:
-
-```bash
-curl -s https://api.redpill.ai/v1/models | python3 -c "import sys,json; [print(m['id']) for m in json.load(sys.stdin)['data'] if 'phala' in m['id'].lower()]"
-```
-
-## Deployed Contracts
-
-| Network | RedpillProofStore | Automata DCAP Verifier |
+| Provider | Example models | Verification |
 |---|---|---|
-| Sepolia | `0x83541AD3f380De2b28E0108d4Da934236342B02b` | `0x76A3657F2d6c5C66733e9b69ACaDadCd0B68788b` |
-| Automata Mainnet | — (not yet deployed) | `0xE26E11B257856B0bEBc4C759aaBDdea72B64351F` |
+| **Phala** | phala/qwen-2.5-7b-instruct, phala/gpt-oss-20b | TDX + GPU + compose + deep (model+KMS+gateway) |
+| **NearAI** | phala/gpt-oss-120b, phala/deepseek-chat-v3.1 | TDX + GPU + deep (model+gateway) |
+| **Chutes** | phala/kimi-k2.5, phala/deepseek-v3.2 | TDX + anti-tamper binding + debug check |
+| **Tinfoil** | meta-llama/llama-3.3-70b-instruct | TDX/SEV-SNP + Sigstore golden values + hw policy |
 
-## What Gets Verified
+## Deployed contracts
 
-| Check | What it proves |
+| Network | RedpillProofStore |
 |---|---|
-| **ECDSA Signature** | A specific Ethereum address signed the request+response hashes |
-| **Intel TDX Quote** | The CPU enclave is genuine Intel TDX |
-| **Report Data Binding** | The signing key + nonce are embedded in the TDX quote |
-| **NVIDIA GPU Attestation** | The GPU is genuine NVIDIA H100/H200 in confidential mode |
-| **Compose Manifest** | The exact code and model running matches `mr_config` |
-| **Sigstore Provenance** | Container images have verified build provenance |
-| **On-Chain DCAP** | TDX quote verified trustlessly by a smart contract (no oracles) |
-| **On-Chain Proof Store** | Permanent, immutable, queryable record of verification |
+| Sepolia | `0x83541AD3f380De2b28E0108d4Da934236342B02b` |
 
-## Interaction Guidelines
+## Interaction guidelines
 
-1. **Ask which mode** the user wants if not clear (attestation-only, signature, on-chain verify, on-chain store)
-2. **Ask for the model** if not specified — suggest `phala/gpt-oss-120b` as default
-3. **Ask for API_KEY** if running signature verification and it's not set
-4. **Ask for PRIVATE_KEY** if running on-chain store and it's not set
-5. **Show the full output** — the verification results are the whole point
-6. **Explain failures** — if a check fails, explain what it means and potential causes
+1. **Ask which model** if not specified — suggest `phala/gpt-oss-120b` as default
+2. **Auto-detect provider** — the verifier handles routing automatically
+3. **Default to light mode** — only suggest deep mode if the user wants maximum trust guarantees
+4. **Show full output** — verification results are the whole point
+5. **Explain failures** — if a check fails, explain what it means for the trust model
