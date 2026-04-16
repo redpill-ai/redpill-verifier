@@ -141,9 +141,14 @@ export async function lookupProof(options: LookupProofOptions): Promise<ProofRec
     args: [options.quoteHash],
   })
 
-  // Check if proof exists (empty quoteHash = no proof)
-  const result = proof as unknown as [Hex, Address, boolean, bigint, bigint, Address]
-  const [quoteHash, signingAddress, isValid, timestamp, blockNumber, submitter] = result
+  // viem returns struct as an object with named fields
+  const p = proof as unknown as Record<string, unknown>
+  const quoteHash = (p.quoteHash ?? p[0]) as Hex
+  const signingAddress = (p.signingAddress ?? p[1]) as Address
+  const isValid = (p.isValid ?? p[2]) as boolean
+  const timestamp = (p.timestamp ?? p[3]) as bigint
+  const blockNumber = (p.blockNumber ?? p[4]) as bigint
+  const submitter = (p.submitter ?? p[5]) as Address
 
   if (quoteHash === '0x0000000000000000000000000000000000000000000000000000000000000000') {
     return null
