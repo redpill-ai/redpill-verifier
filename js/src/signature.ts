@@ -5,6 +5,7 @@ import type {
   NetworkKey,
   SignaturePayload,
   SignatureResult,
+  VerifyResponseOptions,
   VerifySignatureOptions,
 } from './types.js'
 import { sha256 } from './utils.js'
@@ -77,8 +78,86 @@ export async function recoverSigner(text: string, signature: Hex): Promise<strin
 }
 
 /**
- * Run the full signature verification pipeline:
- * chat → fetch signature → verify hashes → recover signer → attestation.
+ * Verify an EXISTING chat response by its chatId.
+ * This is what real apps should use — you've already made your chat call
+ * via the OpenAI SDK or fetch, and now you want to verify the response.
+ *
+ * @example
+ * ```typescript
+ * // Using OpenAI SDK with Redpill
+ * const openai = new OpenAI({ baseURL: 'https://api.redpill.ai/v1', apiKey: 'sk-xxx' })
+ * const response = await openai.chat.completions.create({ model: 'phala/gpt-oss-120b', messages })
+ *
+ * // Verify the response came from a real TEE
+ * const proof = await verifyResponse({
+ *   chatId: response.id,
+ *   model: 'phala/gpt-oss-120b',
+ *   apiKey: 'sk-xxx',
+ * })
+ * console.log(proof.signatureValid)     // true — ECDSA signature is valid
+ * console.log(proof.attestation?.tdx)   // { verified: true } — TEE is genuine
+ * ```
+ */
+export async function verifyResponse(options: VerifyResponseOptions): Promise<SignatureResult> {
+  const { chatId, model, apiKey } = options
+
+  // Fetch signature for the existing chat
+  const sig = await fetchSignature(chatId, model, apiKey)
+  if (sig.error) throw new Error(`Signature error: ${sig.error}`)
+
+  // Parse signature text
+  const parts = sig.text.split(':')
+  let reqHashServer: string
+  let respHashServer: string
+  if (parts.length === 3) {
+    reqHashServer = parts[1]
+    respHashServer = parts[2]
+  } else if (parts.length === 2) {
+    reqHashServer = parts[0]
+    respHashServer = parts[1]
+  } else {
+    throw new Error(`Unexpected signature text format: ${sig.text.slice(0, 60)}`)
+  }
+
+  // Compare hashes if the caller provided the original bodies
+  let requestHashMatch = false
+  let responseHashMatch = false
+  if (options.requestBody) {
+    requestHashMatch = (await sha256(options.requestBody)) === reqHashServer
+  }
+  if (options.responseText) {
+    responseHashMatch = (await sha256(options.responseText)) === respHashServer
+  }
+
+  // Recover signer
+  const recovered = await recoverSigner(sig.text, sig.signature as Hex)
+  const signatureValid = recovered.toLowerCase() === sig.signing_address.toLowerCase()
+
+  // Attestation
+  let attestation: AttestationResult | null = null
+  if (!options.skipAttestation) {
+    attestation = await verifyAttestation({
+      model,
+      network: options.network,
+      skipOnchain: options.skipOnchain,
+    })
+  }
+
+  return {
+    chatId,
+    requestHashMatch,
+    responseHashMatch,
+    signatureValid,
+    recoveredAddress: recovered,
+    signingAddress: sig.signing_address,
+    attestation,
+  }
+}
+
+/**
+ * Run the full signature verification pipeline (demo mode):
+ * makes its own chat call → fetch signature → verify → attestation.
+ * For real apps, use verifyResponse() instead.
  */
 export async function verifySignature(options: VerifySignatureOptions): Promise<SignatureResult> {
   const model = options.model ?? DEFAULT_MODEL

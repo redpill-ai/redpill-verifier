@@ -1,5 +1,5 @@
 import type { Address, Hex } from 'viem'
-import { verifyAttestation, verifySignature, verifyOnchainFull, storeProof, lookupProof } from '../src/index.js'
+import { verifyAttestation, verifyResponse, verifySignature, verifyOnchainFull, storeProof, lookupProof } from '../src/index.js'
 import type { NetworkKey } from '../src/types.js'
 
 const HELP = `
@@ -7,7 +7,8 @@ redpill-verifier — Cryptographic verification for RedPill Confidential AI
 
 Commands:
   attestation   Verify TEE attestation (no API key needed)
-  signature     Verify chat completion signature (requires --api-key)
+  verify        Verify an existing chat response by chatId (requires --api-key --chat-id)
+  signature     Demo: make a chat call + verify signature (requires --api-key)
   onchain       Verify TDX quote on-chain via Automata DCAP
   store         Store proof on-chain (requires --private-key)
   lookup        Look up a stored proof by quote hash
@@ -16,7 +17,8 @@ Options:
   --model MODEL          Model to verify (default: phala/gpt-oss-120b)
   --network NETWORK      automata-mainnet|automata-testnet|sepolia|holesky
   --skip-onchain         Skip on-chain DCAP verification
-  --api-key KEY          RedPill API key (for signature command)
+  --api-key KEY          RedPill API key (for verify/signature commands)
+  --chat-id ID           Chat completion ID to verify (for verify command)
   --private-key KEY      Ethereum private key (for store command)
   --proof-store ADDR     RedpillProofStore contract address
   --quote-hash HASH      Quote hash to look up
@@ -158,6 +160,48 @@ async function cmdSignature(args: Record<string, string | boolean>) {
   console.log()
 }
 
+async function cmdVerify(args: Record<string, string | boolean>) {
+  const apiKey = args['api-key'] as string
+  const chatId = args['chat-id'] as string
+  if (!apiKey) { console.error('Error: --api-key is required'); process.exit(1) }
+  if (!chatId) { console.error('Error: --chat-id is required'); process.exit(1) }
+
+  const model = (args.model as string) ?? 'phala/gpt-oss-120b'
+  const network = (args.network as NetworkKey) ?? 'automata-mainnet'
+
+  console.log(`\n\x1b[1m\x1b[96mVerify Existing Chat Response\x1b[0m`)
+  console.log(`  Chat ID: ${chatId}`)
+  console.log(`  Model:   ${model}`)
+
+  const result = await verifyResponse({
+    chatId,
+    model,
+    apiKey,
+    network,
+    skipOnchain: !!args['skip-onchain'],
+  })
+
+  step(1, 'ECDSA Signature')
+  result.signatureValid
+    ? ok(`Signature valid — signer: ${result.signingAddress}`)
+    : fail(`Signer mismatch: recovered ${result.recoveredAddress}, expected ${result.signingAddress}`)
+
+  if (result.attestation) {
+    step(2, 'TEE Attestation')
+    result.attestation.tdx.verified ? ok('TDX quote verified') : fail('TDX failed')
+    if (result.attestation.reportData) {
+      result.attestation.reportData.bindsAddress ? ok('Signing key bound to TEE hardware') : fail('Key binding failed')
+    }
+    if (result.attestation.gpu) {
+      ok(`GPU attestation: ${result.attestation.gpu.verdict}`)
+    }
+    if (result.attestation.onchain) {
+      result.attestation.onchain.verified ? ok('On-chain DCAP: VALID') : fail('On-chain DCAP: INVALID')
+    }
+  }
+  console.log()
+}
+
 async function cmdOnchain(args: Record<string, string | boolean>) {
   const model = (args.model as string) ?? 'phala/gpt-oss-120b'
   const network = (args.network as NetworkKey) ?? 'automata-mainnet'
@@ -245,6 +289,7 @@ async function main() {
   try {
     switch (command) {
       case 'attestation': await cmdAttestation(args); break
+      case 'verify': await cmdVerify(args); break
       case 'signature': await cmdSignature(args); break
       case 'onchain': await cmdOnchain(args); break
       case 'store': await cmdStore(args); break

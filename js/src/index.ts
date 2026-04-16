@@ -15,6 +15,7 @@ export {
   chat,
   fetchSignature,
   recoverSigner,
+  verifyResponse,
   verifySignature,
 } from './signature.js'
 
@@ -46,6 +47,7 @@ export type {
   NetworkConfig,
   NetworkKey,
   VerifyAttestationOptions,
+  VerifyResponseOptions,
   VerifySignatureOptions,
   VerifyOnchainOptions,
   StoreProofOptions,

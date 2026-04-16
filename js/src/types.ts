@@ -174,6 +174,26 @@ export interface VerifySignatureOptions {
   skipAttestation?: boolean
 }
 
+/** Verify an EXISTING chat response by its chatId. */
+export interface VerifyResponseOptions {
+  /** The chat completion ID (response.id from the OpenAI-compatible API) */
+  chatId: string
+  /** Model name used for the chat */
+  model: string
+  /** RedPill API key */
+  apiKey: string
+  /** Original request body JSON string (optional, for hash comparison) */
+  requestBody?: string
+  /** Original raw response text (optional, for hash comparison) */
+  responseText?: string
+  /** Automata network for on-chain verification */
+  network?: NetworkKey
+  /** Skip on-chain DCAP verification */
+  skipOnchain?: boolean
+  /** Skip TEE attestation verification */
+  skipAttestation?: boolean
+}
+
 export interface VerifyOnchainOptions {
   model?: string
   network?: NetworkKey
