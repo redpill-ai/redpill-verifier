@@ -15,6 +15,7 @@ from attestation_verifier import (
     check_report_data,
     check_gpu,
     check_tdx_quote,
+    select_attestation,
     show_sigstore_provenance,
 )
 
@@ -44,18 +45,21 @@ def fetch_attestation_for(signing_address, model):
     """Fetch attestation for a specific signing address."""
     nonce = secrets.token_hex(32)
     url = f"{BASE_URL}/v1/attestation/report?model={model}&nonce={nonce}&signing_address={signing_address}"
-    report = requests.get(url, headers={"Authorization": f"Bearer {API_KEY}"}, timeout=30).json()
+    report = requests.get(url, timeout=30).json()
 
-    # Handle both single attestation and multi-node response formats
-    if "all_attestations" in report:
-        # Multi-node format: find the attestation matching the signing address
-        attestation = next(
-            item for item in report["all_attestations"]
-            if item["signing_address"].lower() == signing_address.lower()
-        )
-    else:
-        # Single attestation format: use the report directly
-        attestation = report
+    if "error" in report:
+        raise RuntimeError(f"Attestation API error: {report['error']}")
+
+    # Normalize all response formats (gateway+model, all_attestations, flat)
+    attestation = select_attestation(report)
+
+    # If multiple attestations, prefer the one matching signing_address
+    for key in ("model_attestations", "all_attestations"):
+        items = report.get(key, [])
+        for item in items:
+            if isinstance(item, dict) and item.get("signing_address", "").lower() == signing_address.lower():
+                attestation = item
+                break
 
     return attestation, nonce
 
@@ -77,8 +81,19 @@ def verify_chat(chat_id, request_body, response_text, label, model):
     signature_payload = fetch_signature(chat_id, model)
     print(json.dumps(signature_payload, indent=2))
 
+    if "error" in signature_payload:
+        print(f"Signature error: {signature_payload['error']}")
+        return
+
     hashed_text = signature_payload["text"]
-    request_hash_server, response_hash_server = hashed_text.split(":")
+    # Format may be "req_hash:resp_hash" or "model:req_hash:resp_hash"
+    parts = hashed_text.split(":")
+    if len(parts) == 3:
+        request_hash_server, response_hash_server = parts[1], parts[2]
+    elif len(parts) == 2:
+        request_hash_server, response_hash_server = parts[0], parts[1]
+    else:
+        raise ValueError(f"Unexpected signature text format ({len(parts)} parts): {hashed_text[:60]}...")
     print("Request hash matches:", request_hash == request_hash_server)
     print("Response hash matches:", response_hash == response_hash_server)
 
@@ -114,8 +129,13 @@ def streaming_example(model):
     for chunk in response.iter_lines():
         line = chunk.decode()
         response_text += line + "\n"
-        if line.startswith("data: {") and chat_id is None:
-            chat_id = json.loads(line[6:])['id']
+        if chat_id is None and line.startswith("data:"):
+            data_str = line[5:].strip()
+            if data_str.startswith("{"):
+                try:
+                    chat_id = json.loads(data_str)["id"]
+                except (json.JSONDecodeError, KeyError):
+                    pass
 
     verify_chat(chat_id, body_json, response_text, "Streaming example", model)
 
@@ -143,7 +163,7 @@ def non_streaming_example(model):
 def main():
     """Run example verification of streaming and non-streaming chat completions."""
     parser = argparse.ArgumentParser(description="Verify Signed Chat Responses")
-    parser.add_argument("--model", default="phala/deepseek-chat-v3-0324")
+    parser.add_argument("--model", default="phala/gpt-oss-120b")
     args = parser.parse_args()
 
     if not API_KEY:
