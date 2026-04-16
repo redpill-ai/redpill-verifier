@@ -1,0 +1,12 @@
+# Deep verification mode — dstack-verifier (Rust + QEMU)
+# Replays TDX boot measurements to independently verify quotes.
+# Required only for --deep mode. Light mode works without Docker.
+#
+# Start: docker compose up -d
+# Check: curl http://localhost:8080/
+services:
+  dstack-verifier:
+    image: dstacktee/dstack-verifier
+    ports:
+      - "8080:8080"
+    restart: always
