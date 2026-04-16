@@ -208,12 +208,25 @@ def cmd_store(args):
     print("(This submits a transaction — gas will be consumed)")
 
     signing_addr_checksum = Web3.to_checksum_address(signing_address)
+    gas_price = w3.eth.gas_price
+
+    # Estimate gas first, fall back to block gas limit
+    try:
+        estimated = contract.functions.verifyAndStore(
+            quote_bytes, signing_addr_checksum
+        ).estimate_gas({"from": account.address})
+        gas_limit = int(estimated * 1.2)  # 20% buffer
+        print(f"Estimated gas: {estimated} (using {gas_limit} with buffer)")
+    except Exception as e:
+        gas_limit = min(w3.eth.get_block("latest")["gasLimit"], 15_000_000)
+        print(f"Gas estimation failed ({e}), using block limit: {gas_limit}")
+
     tx = contract.functions.verifyAndStore(quote_bytes, signing_addr_checksum).build_transaction({
         "from": account.address,
         "nonce": w3.eth.get_transaction_count(account.address),
-        "gas": 50_000_000,  # DCAP verification is compute-heavy
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.eth.gas_price,
+        "gas": gas_limit,
+        "maxFeePerGas": gas_price * 3,
+        "maxPriorityFeePerGas": gas_price,
     })
 
     signed_tx = w3.eth.account.sign_transaction(tx, account.key)

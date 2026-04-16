@@ -40,14 +40,14 @@ AUTOMATA_NETWORKS = {
     "sepolia": {
         "name": "Sepolia",
         "chain_id": 11155111,
-        "rpc": "https://rpc.sepolia.org",
+        "rpc": "https://ethereum-sepolia-rpc.publicnode.com",
         "contract": "0x76A3657F2d6c5C66733e9b69ACaDadCd0B68788b",
         "explorer": "https://sepolia.etherscan.io",
     },
     "holesky": {
         "name": "Holesky",
         "chain_id": 17000,
-        "rpc": "https://ethereum-holesky.publicnode.com",
+        "rpc": "https://ethereum-holesky-rpc.publicnode.com",
         "contract": "0x133303659F51d75ED216FD98a0B70CbCD75339b2",
         "explorer": "https://holesky.etherscan.io",
     },
