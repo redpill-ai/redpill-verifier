@@ -1,0 +1,60 @@
+{
+  "name": "@redpill-ai/verifier",
+  "version": "1.0.0",
+  "description": "Cryptographic verification tools for RedPill TEE-protected AI — attestation, signatures, and on-chain DCAP proofs",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "bin": {
+    "redpill-verifier": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx bin/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "tee",
+    "attestation",
+    "tdx",
+    "nvidia",
+    "gpu",
+    "confidential-ai",
+    "redpill",
+    "phala",
+    "dcap",
+    "on-chain",
+    "verification"
+  ],
+  "author": "RedPill AI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/redpill-ai/redpill-verifier.git",
+    "directory": "js"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
