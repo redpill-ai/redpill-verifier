@@ -14,7 +14,7 @@ export { isDstackAvailable, verifyWithDstack } from './verifiers/dstack.js'
 export type { DstackResult, DstackVerifierOptions } from './verifiers/dstack.js'
 
 // Verifiers — provider-specific
-export { verifyTinfoil, parseTdxQuote, checkHardwarePolicy, checkManifestPolicy } from './verifiers/tinfoil.js'
+export { verifyTinfoil, parseTdxQuote, parseSevSnpReport, detectQuoteType, checkHardwarePolicy, checkManifestPolicy } from './verifiers/tinfoil.js'
 export type { TinfoilResult, TdxRegisters } from './verifiers/tinfoil.js'
 export { verifyChutes } from './verifiers/chutes.js'
 export type { ChutesResult, ChutesEvidence } from './verifiers/chutes.js'

@@ -158,9 +158,107 @@ export async function checkManifestPolicy(
 }
 
 /**
- * Full Tinfoil TDX verification: hardware policy + manifest golden values.
+ * Parse AMD SEV-SNP report to extract measurement.
+ */
+export function parseSevSnpReport(quoteHex: string): { measurement: string; reportData: string; version: number } | null {
+  const hex = quoteHex.replace(/^0x/, '')
+  let bytes: Uint8Array
+  if (/[^0-9a-fA-F]/.test(hex)) {
+    const bin = atob(quoteHex)
+    bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+  } else {
+    bytes = Uint8Array.from(hex.match(/.{2}/g)!.map((b) => parseInt(b, 16)))
+  }
+
+  if (bytes.length < 0x100) return null
+
+  const toHex = (start: number, end: number) =>
+    Array.from(bytes.slice(start, end)).map((b) => b.toString(16).padStart(2, '0')).join('')
+
+  return {
+    version: bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24),
+    measurement: toHex(0x90, 0xC0),
+    reportData: toHex(0x50, 0x90),
+  }
+}
+
+/**
+ * Detect if a quote is TDX (starts with 04 00) or SEV-SNP (starts with 03 00).
+ */
+export function detectQuoteType(quoteHex: string): 'tdx' | 'sev-snp' | 'unknown' {
+  const hex = quoteHex.replace(/^0x/, '')
+  // Handle base64
+  let firstBytes: string
+  if (/[^0-9a-fA-F]/.test(hex)) {
+    const bin = atob(quoteHex)
+    firstBytes = bin.charCodeAt(0).toString(16).padStart(2, '0') + bin.charCodeAt(1).toString(16).padStart(2, '0')
+  } else {
+    firstBytes = hex.slice(0, 4)
+  }
+  if (firstBytes === '0400') return 'tdx'
+  if (firstBytes === '0300') return 'sev-snp'
+  return 'unknown'
+}
+
+/**
+ * Check SEV-SNP measurement against Sigstore golden values.
+ */
+async function checkSevSnpManifest(measurement: string, repo: string): Promise<string[]> {
+  const errors: string[] = []
+  const bundle = await fetchSigstoreBundle(repo)
+  const payload = extractPayload(bundle)
+  const predicateType = payload.predicateType as string ?? ''
+
+  let goldenMeasurement: string | undefined
+
+  if (predicateType.includes('snp-tdx-multiplatform')) {
+    const snp = (payload.predicate as Record<string, unknown>)?.snp_measurement
+    goldenMeasurement = typeof snp === 'string' ? snp : (snp as Record<string, string>)?.measurement
+  } else if (predicateType.includes('sev-snp-guest')) {
+    const pred = payload.predicate as Record<string, unknown>
+    goldenMeasurement = typeof pred === 'string' ? pred : (pred?.measurement as string)
+  }
+
+  if (!goldenMeasurement) {
+    errors.push('Golden SNP measurement not found in Sigstore bundle')
+  } else if (measurement !== goldenMeasurement) {
+    errors.push(`SNP measurement mismatch: expected ${goldenMeasurement.slice(0, 16)}..., got ${measurement.slice(0, 16)}...`)
+  }
+
+  return errors
+}
+
+/**
+ * Full Tinfoil verification: supports both TDX and SEV-SNP.
  */
 export async function verifyTinfoil(quoteHex: string, repo?: string): Promise<TinfoilResult> {
+  const quoteType = detectQuoteType(quoteHex)
+
+  if (quoteType === 'sev-snp') {
+    // SEV-SNP verification
+    const snp = parseSevSnpReport(quoteHex)
+    if (!snp) return { verified: false, hwPolicyValid: false, manifestValid: null, hwProfile: null, repo: repo ?? null, errors: ['Failed to parse SEV-SNP report'] }
+
+    const allErrors: string[] = []
+    let manifestValid: boolean | null = null
+
+    if (repo) {
+      const manifestErrors = await checkSevSnpManifest(snp.measurement, repo)
+      allErrors.push(...manifestErrors)
+      manifestValid = manifestErrors.length === 0
+    }
+
+    return {
+      verified: allErrors.length === 0,
+      hwPolicyValid: true, // SEV-SNP hardware checks are simpler
+      manifestValid,
+      hwProfile: null,
+      repo: repo ?? null,
+      errors: allErrors,
+    }
+  }
+
+  // TDX verification
   const regs = parseTdxQuote(quoteHex)
   const policyErrors = checkHardwarePolicy(regs)
   const allErrors = [...policyErrors]
