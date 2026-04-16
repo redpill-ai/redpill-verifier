@@ -13,13 +13,15 @@ Python tools for validating RedPill attestation reports and response signatures.
 - 🛡️ **GPU TEE Verification** - NVIDIA H100/H200 attestation via NRAS
 - ✅ **Intel TDX Quote Validation** - Verify CPU TEE measurements
 - 🔑 **ECDSA Signature Verification** - Validate signed AI responses
+- ⛓️ **On-Chain DCAP Verification** - Trustless TDX quote verification via Automata smart contracts
+- 💾 **On-Chain Proof Storage** - Permanently store verification results on-chain
 - 📦 **Sigstore Provenance** - Container supply chain verification
 - 🌐 **Multi-Server Support** - Load balancer attestation aggregation
 
 ## 📋 Requirements
 
 - Python 3.10+
-- `requests`, `eth-account`
+- `requests`, `eth-account`, `web3`
 - RedPill API key from [redpill.ai](https://redpill.ai) (for signature verifier only)
 
 ## 🚀 Quick Start
@@ -29,22 +31,32 @@ Python tools for validating RedPill attestation reports and response signatures.
 ```bash
 git clone https://github.com/redpill-ai/redpill-verifier.git
 cd redpill-verifier
-
-# Install dependencies
-pip install requests eth-account
+pip install -r requirements.txt
 ```
 
 ### Attestation Verification (No API Key)
 
 ```bash
-python3 attestation_verifier.py --model phala/deepseek-chat-v3-0324
+python3 attestation_verifier.py --model phala/gpt-oss-120b
 ```
 
 ### Signature Verification (Requires API Key)
 
 ```bash
 export API_KEY=sk-your-api-key-here
-python3 signature_verifier.py --model phala/deepseek-chat-v3-0324
+python3 signature_verifier.py --model phala/gpt-oss-120b
+```
+
+### On-Chain DCAP Verification (No API Key, No Wallet)
+
+```bash
+python3 onchain_proof.py --model phala/gpt-oss-120b
+```
+
+### Store Proof On-Chain (Requires Wallet)
+
+```bash
+PRIVATE_KEY=0x... python3 onchain_proof.py --store --proof-store 0x... --model phala/gpt-oss-120b
 ```
 
 ## 🔐 Attestation Verifier
@@ -54,14 +66,15 @@ Generates a fresh nonce, requests a new attestation, and verifies:
 - **TDX report data**: Validates that report data binds the signing key (ECDSA or Ed25519) and nonce
 - **Intel TDX quote**: Verifies TDX quote via RedPill's verification service
 - **Compose manifest**: Displays Docker compose manifest and verifies it matches the mr_config measurement
+- **On-chain DCAP**: Optionally verifies the TDX quote on-chain via Automata smart contracts
 
 ### Usage
 
 ```bash
-python3 attestation_verifier.py [--model MODEL_NAME]
+python3 attestation_verifier.py [--model MODEL_NAME] [--network NETWORK] [--skip-onchain]
 ```
 
-**Default model**: `phala/deepseek-chat-v3-0324`
+**Default model**: `phala/gpt-oss-120b`
 
 No API key required. The verifier fetches attestations from the public `/v1/attestation/report` endpoint.
 
@@ -151,6 +164,68 @@ python3 signature_verifier.py [--model MODEL_NAME]
 ✅ **Signing Address Binding** - Bound to hardware via TDX report data
 ✅ **GPU Attestation** - Passes NVIDIA verification
 ✅ **Intel TDX Quote** - Valid CPU TEE measurements
+
+## ⛓️ On-Chain Proof Store
+
+Verifies TDX quotes on-chain via [Automata's DCAP verifier](https://explorer.ata.network/address/0xE26E11B257856B0bEBc4C759aaBDdea72B64351F) and optionally stores the result permanently in a smart contract.
+
+### Verify Only (Free, No Wallet)
+
+```bash
+python3 onchain_proof.py --model phala/gpt-oss-120b
+```
+
+This calls `verifyAndAttestOnChain()` as a view function — read-only, no gas, no wallet needed. The Automata smart contract parses and verifies the TDX quote entirely on-chain.
+
+### Store Proof On-Chain (Requires Wallet)
+
+```bash
+PRIVATE_KEY=0x... python3 onchain_proof.py --store --proof-store 0xCONTRACT --model phala/gpt-oss-120b
+```
+
+This submits a transaction to the `RedpillProofStore` contract, which:
+1. Calls Automata's `verifyAndAttestOnChain()` internally
+2. Stores the result permanently: `(quoteHash, signingAddress, isValid, timestamp, blockNumber, submitter)`
+3. Emits a `ProofStored` event for indexing
+
+### Look Up a Stored Proof
+
+```bash
+python3 onchain_proof.py --lookup 0xQUOTE_HASH --proof-store 0xCONTRACT
+```
+
+### Deploy the Proof Store Contract
+
+```bash
+# Compile the contract
+solc --bin --abi contracts/RedpillProofStore.sol -o contracts/build/
+
+# Deploy (one-time setup)
+PROOF_STORE_BYTECODE=0x$(cat contracts/build/RedpillProofStore.bin) \
+PRIVATE_KEY=0x... \
+python3 onchain_proof.py --deploy --network automata-mainnet
+```
+
+### Supported Networks
+
+| Network | Chain ID | DCAP Verifier Contract |
+|---|---|---|
+| Automata Mainnet | 65536 | `0xE26E11B257856B0bEBc4C759aaBDdea72B64351F` |
+| Automata Testnet | 1398243 | `0xefE368b17D137E86298eec8EbC5502fb56d27832` |
+| Sepolia | 11155111 | `0x76A3657F2d6c5C66733e9b69ACaDadCd0B68788b` |
+| Holesky | 17000 | `0x133303659F51d75ED216FD98a0B70CbCD75339b2` |
+
+### What It Proves
+
+The on-chain proof store creates a permanent, trustless record:
+- **Anyone** can verify the proof exists by querying the contract
+- **No trusted third parties** — the TDX quote is verified by the Automata smart contract, not an API
+- **Immutable** — once stored, the proof cannot be modified or deleted
+- **Indexed** — `ProofStored` events can be queried by block explorers and indexers
+
+### Smart Contract
+
+See [`contracts/RedpillProofStore.sol`](contracts/RedpillProofStore.sol) for the full source code.
 
 ## 📦 Sigstore Provenance
 

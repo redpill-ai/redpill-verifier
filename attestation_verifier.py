@@ -10,10 +10,61 @@ from hashlib import sha256
 
 import requests
 
+try:
+    from web3 import Web3
+    HAS_WEB3 = True
+except ImportError:
+    HAS_WEB3 = False
+
 API_BASE = "https://api.redpill.ai"
 GPU_VERIFIER_API = "https://nras.attestation.nvidia.com/v3/attest/gpu"
 PHALA_TDX_VERIFIER_API = "https://cloud-api.phala.network/api/v1/attestations/verify"
 SIGSTORE_SEARCH_BASE = "https://search.sigstore.dev/?hash="
+
+# Automata on-chain DCAP verifier deployments
+AUTOMATA_NETWORKS = {
+    "automata-mainnet": {
+        "name": "Automata Mainnet",
+        "chain_id": 65536,
+        "rpc": "https://rpc.ata.network",
+        "contract": "0xE26E11B257856B0bEBc4C759aaBDdea72B64351F",
+        "explorer": "https://explorer.ata.network",
+    },
+    "automata-testnet": {
+        "name": "Automata Testnet",
+        "chain_id": 1398243,
+        "rpc": "https://1rpc.io/ata/testnet",
+        "contract": "0xefE368b17D137E86298eec8EbC5502fb56d27832",
+        "explorer": "https://explorer-testnet.ata.network",
+    },
+    "sepolia": {
+        "name": "Sepolia",
+        "chain_id": 11155111,
+        "rpc": "https://rpc.sepolia.org",
+        "contract": "0x76A3657F2d6c5C66733e9b69ACaDadCd0B68788b",
+        "explorer": "https://sepolia.etherscan.io",
+    },
+    "holesky": {
+        "name": "Holesky",
+        "chain_id": 17000,
+        "rpc": "https://ethereum-holesky.publicnode.com",
+        "contract": "0x133303659F51d75ED216FD98a0B70CbCD75339b2",
+        "explorer": "https://holesky.etherscan.io",
+    },
+}
+
+DCAP_VERIFY_ABI = [
+    {
+        "inputs": [{"name": "data", "type": "bytes"}],
+        "name": "verifyAndAttestOnChain",
+        "outputs": [
+            {"name": "", "type": "bool"},
+            {"name": "", "type": "bytes"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]
 
 
 def fetch_report(model, nonce):
@@ -179,6 +230,47 @@ def show_sigstore_provenance(attestation):
             print(f"  ✗ {link} (HTTP {status})")
 
 
+def check_onchain(attestation, network_key="automata-mainnet"):
+    """Verify TDX quote on-chain via Automata's DCAP verifier contract.
+
+    This is a view call (read-only, no gas, no wallet needed).
+    Returns dict with verification results.
+    """
+    if not HAS_WEB3:
+        print("web3 not installed, skipping on-chain verification")
+        print("Install with: pip install web3")
+        return {"verified": None, "error": "web3 not installed"}
+
+    network = AUTOMATA_NETWORKS[network_key]
+    print(f"Network: {network['name']} (chain {network['chain_id']})")
+
+    w3 = Web3(Web3.HTTPProvider(network["rpc"], request_kwargs={"timeout": 120}))
+    if not w3.is_connected():
+        print(f"Cannot connect to {network['name']} RPC")
+        return {"verified": None, "error": "RPC connection failed"}
+
+    contract = w3.eth.contract(
+        address=Web3.to_checksum_address(network["contract"]),
+        abi=DCAP_VERIFY_ABI,
+    )
+
+    quote_bytes = bytes.fromhex(attestation["intel_quote"].removeprefix("0x"))
+    print(f"TDX quote size: {len(quote_bytes)} bytes")
+    print(f"Calling verifyAndAttestOnChain() (may take 10-60s)...")
+
+    try:
+        is_valid, raw_data = contract.functions.verifyAndAttestOnChain(quote_bytes).call()
+    except Exception as e:
+        print(f"On-chain call failed: {e}")
+        return {"verified": False, "error": str(e)}
+
+    print(f"On-chain DCAP verified: {is_valid}")
+    print(f"Contract: {network['contract']}")
+    print(f"Explorer: {network['explorer']}/address/{network['contract']}")
+
+    return {"verified": is_valid, "raw_data": raw_data.hex() if raw_data else ""}
+
+
 def show_compose(attestation, intel_result):
     """Display the Docker compose manifest and verify against mr_config from verified quote."""
     tcb_info = attestation["info"]["tcb_info"]
@@ -203,7 +295,14 @@ def show_compose(attestation, intel_result):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify RedPill TEE Attestation")
-    parser.add_argument("--model", default="phala/deepseek-chat-v3-0324")
+    parser.add_argument("--model", default="phala/gpt-oss-120b")
+    parser.add_argument(
+        "--network",
+        default="automata-mainnet",
+        choices=list(AUTOMATA_NETWORKS.keys()),
+        help="Automata network for on-chain DCAP verification (default: automata-mainnet)",
+    )
+    parser.add_argument("--skip-onchain", action="store_true", help="Skip on-chain DCAP verification")
     args = parser.parse_args()
 
     request_nonce = secrets.token_hex(32)
@@ -231,6 +330,10 @@ def main() -> None:
 
     show_compose(attestation, intel_result)
     show_sigstore_provenance(attestation)
+
+    if not args.skip_onchain:
+        print("\n🔐 On-chain DCAP verification")
+        check_onchain(attestation, args.network)
 
 
 if __name__ == "__main__":
