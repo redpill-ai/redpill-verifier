@@ -12,6 +12,9 @@ import { detectProvider, detectProviderFromAttestation, getPrimaryProvider, type
 import { checkTdxQuote, checkReportData, checkGpu, checkCompose, checkSigstore } from './verifiers/cloud-api.js'
 import { isDstackAvailable, verifyWithDstack, type DstackResult } from './verifiers/dstack.js'
 import { verifyOnchain } from './verifiers/onchain.js'
+import { verifyTinfoil, type TinfoilResult } from './verifiers/tinfoil.js'
+import { verifyChutes, type ChutesResult, type ChutesEvidence } from './verifiers/chutes.js'
+import { verifyWithIta, type ItaResult } from './verifiers/intel-ita.js'
 import { randomNonce, selectAttestation, sha256 } from './utils.js'
 import type {
   AttestationReport,
@@ -204,6 +207,8 @@ export interface VerifyModelOptions {
   skipOnchain?: boolean
   /** Skip Sigstore provenance check */
   skipSigstore?: boolean
+  /** Intel Trust Authority API key (optional) */
+  itaApiKey?: string
 }
 
 export interface VerifyModelResult {
@@ -229,6 +234,11 @@ export interface VerifyModelResult {
   } | null
   /** On-chain DCAP verification */
   onchain: OnchainVerifyResult | null
+  /** Provider-specific verification */
+  tinfoil: TinfoilResult | null
+  chutes: ChutesResult | null
+  /** Intel Trust Authority appraisal */
+  ita: ItaResult | null
   errors: string[]
 }
 
@@ -328,7 +338,51 @@ export async function verifyModel(options: VerifyModelOptions = {}): Promise<Ver
     deepResult = { available: false, components: [], allValid: false }
   }
 
-  // 6. On-chain DCAP
+  // 6. Provider-specific verification
+  let tinfoilResult: TinfoilResult | null = null
+  let chutesResult: ChutesResult | null = null
+
+  if (provider === 'tinfoil' && attestation.intel_quote) {
+    try {
+      // Tinfoil models need repo for manifest comparison — get from model info or config
+      const repo = (modelInfo as unknown as Record<string, unknown>).repo as string | undefined
+      tinfoilResult = await verifyTinfoil(attestation.intel_quote, repo)
+      if (!tinfoilResult.verified) errors.push(`Tinfoil policy: ${tinfoilResult.errors.join(', ')}`)
+    } catch (e) {
+      errors.push(`Tinfoil verification failed: ${e}`)
+    }
+  }
+
+  if (provider === 'chutes' && attestation.intel_quote) {
+    try {
+      const allAtts = (report as unknown as Record<string, unknown>).all_attestations as Array<Record<string, unknown>> | undefined
+      const att = allAtts?.[0]
+      if (att) {
+        chutesResult = await verifyChutes({
+          instanceId: (att.instance_id ?? '') as string,
+          quote: attestation.intel_quote,
+          nonce: (att.nonce ?? nonce) as string,
+          e2ePubkey: (att.e2e_pubkey ?? '') as string,
+          gpuEvidence: att.gpu_evidence as ChutesEvidence['gpuEvidence'],
+        })
+        if (!chutesResult.verified) errors.push(`Chutes: ${chutesResult.errors.join(', ')}`)
+      }
+    } catch (e) {
+      errors.push(`Chutes verification failed: ${e}`)
+    }
+  }
+
+  // 7. Intel Trust Authority (optional)
+  let itaResult: ItaResult | null = null
+  if (attestation.intel_quote && options.itaApiKey) {
+    try {
+      itaResult = await verifyWithIta(attestation.intel_quote, options.itaApiKey)
+    } catch (e) {
+      errors.push(`ITA appraisal failed: ${e}`)
+    }
+  }
+
+  // 8. On-chain DCAP
   let onchainResult: OnchainVerifyResult | null = null
   if (!options.skipOnchain && attestation.intel_quote) {
     try {
@@ -338,10 +392,12 @@ export async function verifyModel(options: VerifyModelOptions = {}): Promise<Ver
     }
   }
 
-  // 7. Determine overall verification status
+  // 9. Determine overall verification status
   const lightValid = tdxResult?.verified ?? false
   const deepValid = deepResult?.available ? deepResult.allValid : true // skip if unavailable
-  const verified = lightValid && deepValid
+  const providerValid = provider === 'tinfoil' ? (tinfoilResult?.verified ?? true) : true
+  const chutesValid = provider === 'chutes' ? (chutesResult?.verified ?? true) : true
+  const verified = lightValid && deepValid && providerValid && chutesValid
 
   return {
     verified,
@@ -353,6 +409,9 @@ export async function verifyModel(options: VerifyModelOptions = {}): Promise<Ver
     light: { tdx: tdxResult, reportData: reportDataResult, gpu: gpuResult, compose: composeResult, sigstore: sigstoreLinks },
     deep: deepResult,
     onchain: onchainResult,
+    tinfoil: tinfoilResult,
+    chutes: chutesResult,
+    ita: itaResult,
     errors,
   }
 }

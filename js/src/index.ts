@@ -13,6 +13,16 @@ export { checkTdxQuote, checkReportData, checkGpu, checkCompose, checkSigstore }
 export { isDstackAvailable, verifyWithDstack } from './verifiers/dstack.js'
 export type { DstackResult, DstackVerifierOptions } from './verifiers/dstack.js'
 
+// Verifiers — provider-specific
+export { verifyTinfoil, parseTdxQuote, checkHardwarePolicy, checkManifestPolicy } from './verifiers/tinfoil.js'
+export type { TinfoilResult, TdxRegisters } from './verifiers/tinfoil.js'
+export { verifyChutes } from './verifiers/chutes.js'
+export type { ChutesResult, ChutesEvidence } from './verifiers/chutes.js'
+
+// Verifiers — Intel Trust Authority
+export { verifyWithIta } from './verifiers/intel-ita.js'
+export type { ItaResult } from './verifiers/intel-ita.js'
+
 // Verifiers — on-chain
 export { verifyOnchain, storeProof, lookupProof } from './verifiers/onchain.js'
 
