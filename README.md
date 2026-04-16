@@ -1,426 +1,279 @@
-# 🔴 RedPill Verifier
+# RedPill Verifier
 
-**Cryptographic Verification Tools for RedPill TEE-Protected AI**
+Cryptographic verification for RedPill Confidential AI. Prove that AI responses come from genuine TEE hardware — not trust, math.
 
-Python tools for validating RedPill attestation reports and response signatures. These verifiers provide cryptographic proof that your AI requests are processed in genuine Trusted Execution Environments (TEE) with hardware-enforced privacy.
+Available as a **TypeScript/JavaScript npm package** (browser + Node.js) and **Python scripts**.
 
+[![npm](https://img.shields.io/npm/v/@redpill-ai/verifier)](https://www.npmjs.com/package/@redpill-ai/verifier)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 
-## 🌟 Features
+## What it verifies
 
-- 🔐 **TEE Attestation Verification** - Cryptographic proof of genuine hardware
-- 🛡️ **GPU TEE Verification** - NVIDIA H100/H200 attestation via NRAS
-- ✅ **Intel TDX Quote Validation** - Verify CPU TEE measurements
-- 🔑 **ECDSA Signature Verification** - Validate signed AI responses
-- ⛓️ **On-Chain DCAP Verification** - Trustless TDX quote verification via Automata smart contracts
-- 💾 **On-Chain Proof Storage** - Permanently store verification results on-chain
-- 📦 **Sigstore Provenance** - Container supply chain verification
-- 🌐 **Multi-Server Support** - Load balancer attestation aggregation
+| Check | What it proves |
+|---|---|
+| **ECDSA Signature** | A specific Ethereum address signed the request+response hashes |
+| **Intel TDX Quote** | The CPU enclave is genuine Intel TDX hardware |
+| **Report Data Binding** | The signing key is generated inside the TEE and bound to hardware |
+| **NVIDIA GPU Attestation** | The GPU is genuine H100/H200 in confidential computing mode |
+| **Compose Manifest** | The exact code and model weights running match `mr_config` |
+| **Sigstore Provenance** | Container images have verified build provenance |
+| **On-Chain DCAP** | TDX quote verified trustlessly by an Ethereum smart contract |
+| **On-Chain Proof Store** | Permanent, immutable, queryable record of verification |
 
-## 📋 Requirements
-
-- Python 3.10+
-- `requests`, `eth-account`, `web3`
-- RedPill API key from [redpill.ai](https://redpill.ai) (for signature verifier only)
-
-## 🚀 Quick Start
-
-### Installation
+## Quick Start (JavaScript / TypeScript)
 
 ```bash
-git clone https://github.com/redpill-ai/redpill-verifier.git
-cd redpill-verifier
+cd js && npm install
+```
+
+### Verify your chat response
+
+Use RedPill as an OpenAI drop-in, then verify the response came from a real TEE:
+
+```typescript
+import OpenAI from 'openai'
+import { verifyResponse } from '@redpill-ai/verifier'
+
+// Use RedPill as OpenAI alternative
+const openai = new OpenAI({
+  baseURL: 'https://api.redpill.ai/v1',
+  apiKey: 'sk-your-key',
+})
+
+const response = await openai.chat.completions.create({
+  model: 'phala/gpt-oss-120b',
+  messages: [{ role: 'user', content: 'What is confidential computing?' }],
+})
+
+// Verify: signature is valid + signing key is inside a real TEE
+const proof = await verifyResponse({
+  chatId: response.id,
+  model: 'phala/gpt-oss-120b',
+  apiKey: 'sk-your-key',
+})
+
+console.log(proof.signatureValid)              // true
+console.log(proof.attestation?.tdx.verified)   // true
+console.log(proof.attestation?.gpu?.verdict)    // "true"
+console.log(proof.attestation?.onchain?.verified) // true
+```
+
+### Verify attestation (no API key needed)
+
+```typescript
+import { verifyAttestation } from '@redpill-ai/verifier'
+
+const result = await verifyAttestation({ model: 'phala/gpt-oss-120b' })
+// result.tdx.verified === true
+// result.reportData.bindsAddress === true
+// result.gpu.verdict === "true"
+// result.onchain.verified === true
+```
+
+### Verify on-chain only (works in browser)
+
+```typescript
+import { verifyOnchainFull } from '@redpill-ai/verifier'
+
+// This is the only check that works directly in browsers (no CORS issues)
+const onchain = await verifyOnchainFull({
+  model: 'phala/gpt-oss-120b',
+  network: 'automata-mainnet',
+})
+console.log(onchain.verified) // true — verified by smart contract, not an API
+```
+
+### Store proof permanently on-chain
+
+```typescript
+import { storeProof, lookupProof } from '@redpill-ai/verifier'
+
+// Store (requires wallet + gas)
+const tx = await storeProof({
+  model: 'phala/gpt-oss-120b',
+  network: 'sepolia',
+  proofStore: '0x83541AD3f380De2b28E0108d4Da934236342B02b',
+  privateKey: '0x...',
+})
+console.log(tx.txHash, tx.isValid) // permanent on-chain record
+
+// Look up later (free)
+const record = await lookupProof({
+  quoteHash: tx.quoteHash,
+  proofStore: '0x83541AD3f380De2b28E0108d4Da934236342B02b',
+  network: 'sepolia',
+})
+```
+
+### CLI
+
+```bash
+# Attestation (no API key)
+npx redpill-verifier attestation --model phala/gpt-oss-120b
+
+# Verify existing chat response
+npx redpill-verifier verify --chat-id chatcmpl-xxx --api-key sk-xxx --model phala/gpt-oss-120b
+
+# On-chain DCAP verification
+npx redpill-verifier onchain --model phala/gpt-oss-120b --network sepolia
+
+# Store proof on-chain
+npx redpill-verifier store --private-key 0x... --proof-store 0x... --network sepolia
+
+# Look up stored proof
+npx redpill-verifier lookup --quote-hash 0x... --proof-store 0x... --network sepolia
+```
+
+## Quick Start (Python)
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Attestation Verification (No API Key)
-
 ```bash
+# Attestation verification (no API key)
 python3 attestation_verifier.py --model phala/gpt-oss-120b
-```
 
-### Signature Verification (Requires API Key)
+# Signature verification (requires API key)
+API_KEY=sk-xxx python3 signature_verifier.py --model phala/gpt-oss-120b
 
-```bash
-export API_KEY=sk-your-api-key-here
-python3 signature_verifier.py --model phala/gpt-oss-120b
-```
-
-### On-Chain DCAP Verification (No API Key, No Wallet)
-
-```bash
+# On-chain DCAP verification
 python3 onchain_proof.py --model phala/gpt-oss-120b
+
+# Store proof on-chain
+PRIVATE_KEY=0x... python3 onchain_proof.py --store --proof-store 0x... --network sepolia
 ```
 
-### Store Proof On-Chain (Requires Wallet)
-
-```bash
-PRIVATE_KEY=0x... python3 onchain_proof.py --store --proof-store 0x... --model phala/gpt-oss-120b
-```
-
-## 🔐 Attestation Verifier
-
-Generates a fresh nonce, requests a new attestation, and verifies:
-- **GPU attestation**: Submits GPU evidence payload to NVIDIA NRAS and verifies the nonce matches
-- **TDX report data**: Validates that report data binds the signing key (ECDSA or Ed25519) and nonce
-- **Intel TDX quote**: Verifies TDX quote via RedPill's verification service
-- **Compose manifest**: Displays Docker compose manifest and verifies it matches the mr_config measurement
-- **On-chain DCAP**: Optionally verifies the TDX quote on-chain via Automata smart contracts
-
-### Usage
-
-```bash
-python3 attestation_verifier.py [--model MODEL_NAME] [--network NETWORK] [--skip-onchain]
-```
-
-**Default model**: `phala/gpt-oss-120b`
-
-No API key required. The verifier fetches attestations from the public `/v1/attestation/report` endpoint.
-
-### Example Output
+## How the verification chain works
 
 ```
-Signing address: 0x1234...
-Request nonce: abc123...
-
-🔐 TDX report data
-Signing algorithm: ecdsa
-Report data binds signing address: True
-Report data embeds request nonce: True
-
-🔐 GPU attestation
-GPU payload nonce matches request_nonce: True
-NVIDIA attestation verdict: PASS
-
-🔐 Intel TDX quote
-Intel TDX quote verified: True
-
-Docker compose manifest attested by the enclave:
-version: '3.8'
-services:
-  model:
-    image: phala/deepseek@sha256:77fbe5f...
-    ...
-
-Compose sha256: abc123...
-mr_config (from verified quote): 0x01abc123...
-mr_config matches compose hash: True
-
-🔐 Sigstore provenance
-Checking Sigstore accessibility for container images...
-  ✓ https://search.sigstore.dev/?hash=sha256:77fbe5f... (HTTP 200)
+User Request
+    |
+    v
++-----------------------------------------------+
+|  TEE Enclave (Intel TDX + NVIDIA H100 GPU)    |
+|                                               |
+|  1. Receives request                          |
+|  2. Runs inference on model                   |
+|  3. SHA256(request) : SHA256(response)        |
+|  4. Signs with Ethereum private key           |
+|     (key NEVER leaves the enclave)            |
++-----------------------------------------------+
+    |
+    v
+User gets: response + chat_id
+    |
+    v
+Verification (what this tool does):
+  +-- ECDSA Signature --> ecrecover --> signing_address signed these hashes
+  +-- TDX Quote ---------> Intel verification --> genuine TDX enclave
+  +-- Report Data -------> signing_address + nonce bound to hardware
+  +-- NVIDIA NRAS -------> genuine H100/H200 GPU in confidential mode
+  +-- Compose Manifest --> mr_config match --> exact code + model verified
+  +-- Sigstore ----------> container build provenance verified
+  +-- On-Chain DCAP -----> Automata smart contract --> trustless verification
+  +-- Proof Store -------> permanent on-chain record anyone can query
 ```
 
-### What It Verifies
+## Two-layer TEE architecture
 
-✅ **GPU TEE Measurements** - Proves genuine NVIDIA H100/H200 TEE
-✅ **Model Hash** - Verifies exact model version
-✅ **Code Hash** - Confirms inference code integrity
-✅ **Nonce Freshness** - Prevents replay attacks
-✅ **Cryptographic Binding** - Signing key bound to hardware
-✅ **Container Provenance** - Verifies build supply chain
+**Layer 1: TEE Gateway** (Intel TDX) — all 250+ models
+- Request/response processing inside TDX enclave
+- ECDSA signing key generated and bound to hardware
+- Verified via `gateway_attestation`
 
-## 🔑 Signature Verifier
+**Layer 2: TEE Inference** (Intel TDX + NVIDIA H100/H200) — Phala models
+- Model weights loaded in GPU confidential computing
+- Inference runs in GPU secure enclaves
+- Verified via `model_attestations` + NVIDIA NRAS
 
-Fetches chat completions (streaming and non-streaming), verifies ECDSA signatures, and validates attestations:
+Both layers are independently attestable and verifiable.
 
-1. Sends chat completion request to `/v1/chat/completions`
-2. Fetches signature from `/v1/signature/{chat_id}` endpoint
-3. Verifies request hash and response hash match the signed hashes
-4. Recovers ECDSA signing address from signature
-5. Fetches fresh attestation with user-supplied nonce for the recovered signing address
-6. Validates attestation using the same checks as attestation verifier
+## Deployed contracts
 
-**Note**: The verifier supplies a fresh nonce when fetching attestation (step 5), which ensures attestation freshness but means the nonce/report_data won't match the original signing context. This is expected behavior - the verifier proves the signing key is bound to valid hardware, not that a specific attestation was used for signing.
-
-### Setup
-
-Set your API key as an environment variable:
-
-```bash
-export API_KEY=sk-your-api-key-here
-```
-
-Or create a `.env` file:
-
-```bash
-API_KEY=sk-your-api-key-here
-```
-
-Then run:
-
-```bash
-python3 signature_verifier.py [--model MODEL_NAME]
-```
-
-**Default model**: `phala/deepseek-chat-v3-0324`
-
-### What It Verifies
-
-✅ **Request Body Hash** - Matches server-computed hash
-✅ **Response Text Hash** - Matches server-computed hash
-✅ **ECDSA Signature** - Valid and recovers to claimed signing address
-✅ **Signing Address Binding** - Bound to hardware via TDX report data
-✅ **GPU Attestation** - Passes NVIDIA verification
-✅ **Intel TDX Quote** - Valid CPU TEE measurements
-
-## ⛓️ On-Chain Proof Store
-
-Verifies TDX quotes on-chain via [Automata's DCAP verifier](https://explorer.ata.network/address/0xE26E11B257856B0bEBc4C759aaBDdea72B64351F) and optionally stores the result permanently in a smart contract.
-
-### Verify Only (Free, No Wallet)
-
-```bash
-python3 onchain_proof.py --model phala/gpt-oss-120b
-```
-
-This calls `verifyAndAttestOnChain()` as a view function — read-only, no gas, no wallet needed. The Automata smart contract parses and verifies the TDX quote entirely on-chain.
-
-### Store Proof On-Chain (Requires Wallet)
-
-```bash
-PRIVATE_KEY=0x... python3 onchain_proof.py --store --proof-store 0xCONTRACT --model phala/gpt-oss-120b
-```
-
-This submits a transaction to the `RedpillProofStore` contract, which:
-1. Calls Automata's `verifyAndAttestOnChain()` internally
-2. Stores the result permanently: `(quoteHash, signingAddress, isValid, timestamp, blockNumber, submitter)`
-3. Emits a `ProofStored` event for indexing
-
-### Look Up a Stored Proof
-
-```bash
-python3 onchain_proof.py --lookup 0xQUOTE_HASH --proof-store 0xCONTRACT
-```
-
-### Deploy the Proof Store Contract
-
-```bash
-# Compile the contract
-solc --bin --abi contracts/RedpillProofStore.sol -o contracts/build/
-
-# Deploy (one-time setup)
-PROOF_STORE_BYTECODE=0x$(cat contracts/build/RedpillProofStore.bin) \
-PRIVATE_KEY=0x... \
-python3 onchain_proof.py --deploy --network automata-mainnet
-```
-
-### Supported Networks
-
-| Network | Chain ID | DCAP Verifier Contract |
+| Network | RedpillProofStore | Automata DCAP Verifier |
 |---|---|---|
-| Automata Mainnet | 65536 | `0xE26E11B257856B0bEBc4C759aaBDdea72B64351F` |
-| Automata Testnet | 1398243 | `0xefE368b17D137E86298eec8EbC5502fb56d27832` |
-| Sepolia | 11155111 | `0x76A3657F2d6c5C66733e9b69ACaDadCd0B68788b` |
-| Holesky | 17000 | `0x133303659F51d75ED216FD98a0B70CbCD75339b2` |
+| Sepolia | [`0x83541AD3...`](https://sepolia.etherscan.io/address/0x83541AD3f380De2b28E0108d4Da934236342B02b) | [`0x76A3657F...`](https://sepolia.etherscan.io/address/0x76A3657F2d6c5C66733e9b69ACaDadCd0B68788b) |
+| Automata Mainnet | - | [`0xE26E11B2...`](https://explorer.ata.network/address/0xE26E11B257856B0bEBc4C759aaBDdea72B64351F) |
+| Automata Testnet | - | `0xefE368b1...` |
+| Holesky | - | `0x13330365...` |
 
-### What It Proves
+## Browser vs backend
 
-The on-chain proof store creates a permanent, trustless record:
-- **Anyone** can verify the proof exists by querying the contract
-- **No trusted third parties** — the TDX quote is verified by the Automata smart contract, not an API
-- **Immutable** — once stored, the proof cannot be modified or deleted
-- **Indexed** — `ProofStored` events can be queried by block explorers and indexers
+| Check | Browser | Backend (Node.js) |
+|---|---|---|
+| On-chain DCAP (viem RPC) | Yes | Yes |
+| ECDSA recovery (viem) | Yes | Yes |
+| Signature fetch (api.redpill.ai) | CORS blocked | Yes |
+| TDX quote (cloud-api.phala.network) | CORS blocked | Yes |
+| GPU (nras.attestation.nvidia.com) | CORS blocked | Yes |
 
-### Smart Contract
+**For browser apps**: verify on your backend, pass the result to the frontend. Or use `verifyOnchainFull()` directly in the browser for trustless client-side proof via Automata's smart contract.
 
-See [`contracts/RedpillProofStore.sol`](contracts/RedpillProofStore.sol) for the full source code.
+## Trust model
 
-## 📦 Sigstore Provenance
+**You trust**: Intel (TDX), NVIDIA (H100/H200 TEE), Phala Network (deployment), open source code
 
-Both scripts automatically extract all container image digests from the Docker compose manifest (matching `@sha256:xxx` patterns) and verify Sigstore accessibility for each image. This allows you to:
+**You do NOT trust**: RedPill operators, cloud providers, system administrators, other users on the same hardware
 
-1. Verify the container images were built from the expected source repository
-2. Review the GitHub Actions workflow that built the images
-3. Audit the build provenance and supply chain metadata
+## API reference
 
-The verifiers check each Sigstore link with an HTTP HEAD request to ensure provenance data is available (not 404).
+### JavaScript exports (25 functions)
 
-### Example Output
+```typescript
+// High-level orchestrators
+verifyResponse(opts)      // Verify an existing chat response by chatId
+verifySignature(opts)     // Demo: make chat call + verify (for testing)
+verifyAttestation(opts)   // Full attestation pipeline
+verifyOnchainFull(opts)   // Fetch attestation + verify on-chain
 
-```
-🔐 Sigstore provenance
-Checking Sigstore accessibility for container images...
-  ✓ https://search.sigstore.dev/?hash=sha256:77fbe5f... (HTTP 200)
-  ✓ https://search.sigstore.dev/?hash=sha256:abc123... (HTTP 200)
-```
+// Individual checks (composable)
+fetchReport(model, nonce)
+checkTdxQuote(attestation)
+checkReportData(attestation, nonce, reportDataHex)
+checkGpu(attestation, nonce)
+checkCompose(attestation, mrConfig)
+checkSigstore(attestation)
+verifyOnchain(attestation, network)
 
-If a link returns ✗, the provenance data may not be available in Sigstore (either the image wasn't signed or the digest is incorrect).
+// Signature
+chat(model, message, apiKey)
+fetchSignature(chatId, model, apiKey)
+recoverSigner(text, signature)
 
-## 🌐 Multi-Server Load Balancer Setup
+// On-chain proof storage
+storeProof(opts)
+lookupProof(opts)
 
-In production deployments with multiple backend servers behind a load balancer:
+// Utilities
+sha256(text)
+randomNonce(bytes?)
+decodeJwtPayload(jwt)
+selectAttestation(report, signingAddress?)
 
-### Server Behavior
-
-- Each server has its own unique signing key/address
-- Attestation requests with `signing_address` parameter return 404 if the address doesn't match
-- Response includes `all_attestations: [attestation]` (single-element array with this server's attestation)
-
-### Load Balancer Requirements
-
-When `/v1/attestation/report?signing_address={addr}&nonce={nonce}`:
-
-1. **Broadcast** the request to all backend servers
-2. Collect non-404 responses from servers matching the signing_address
-3. Merge `all_attestations` arrays from all responses
-4. Return combined response with all servers' attestations
-
-### Verifier Flow
-
-1. Get signature → extract `signing_address`
-2. Request attestation with `signing_address` parameter
-3. LB broadcasts → collect attestations from all servers
-4. Verifier finds matching attestation by comparing `signing_address` in `all_attestations`
-
-### Example Response (Multi-Server)
-
-```json
-{
-  "signing_address": "0xServer1...",
-  "intel_quote": "...",
-  "all_attestations": [
-    {"signing_address": "0xServer1...", "intel_quote": "...", ...},
-    {"signing_address": "0xServer2...", "intel_quote": "...", ...}
-  ]
-}
+// Constants
+API_BASE, AUTOMATA_NETWORKS, DCAP_VERIFY_ABI, PROOF_STORE_ABI, DEFAULT_MODEL
 ```
 
-The verifier filters `all_attestations` to find the entry matching the signature's `signing_address`.
+## Smart contract
 
-## 🔬 Verification Architecture
+[`contracts/RedpillProofStore.sol`](contracts/RedpillProofStore.sol) — wraps Automata's `verifyAndAttestOnChain()` and stores results permanently:
 
-### Two-Layer TEE Protection
+```solidity
+function verifyAndStore(bytes calldata quote, address signingAddress) external returns (bool)
+function getProof(bytes32 quoteHash) external view returns (Proof memory)
+function proofCount() external view returns (uint256)
 
-**Layer 1: TEE-Protected Gateway (All Models)**
-- Request processing in TEE (Intel TDX)
-- Response handling in TEE
-- Applies to all 250+ models
-- Verified via attestation reports
-
-**Layer 2: TEE-Protected Inference (Phala Models)**
-- Model weights in GPU TEE (NVIDIA H100/H200)
-- Inference computation in GPU secure enclaves
-- Complete end-to-end protection
-- Verified via GPU attestation + signature verification
-
-## 🛡️ Trust Model
-
-### You Must Trust
-
-- ✅ NVIDIA GPU vendor (H100/H200 TEE correctness)
-- ✅ Intel CPU vendor (TDX implementation)
-- ✅ Phala Network (model deployment integrity)
-- ✅ Open source code (auditable on GitHub)
-
-### You Do NOT Need to Trust
-
-- ❌ RedPill operators
-- ❌ Cloud provider (AWS, GCP, Azure)
-- ❌ System administrators
-- ❌ Other users on same hardware
-
-### Cryptographic Guarantees
-
-✅ **Hardware-Enforced Privacy** - Data never leaves TEE in plaintext
-✅ **Verifiable Execution** - Cryptographic proof of code integrity
-✅ **Tamper-Proof** - Cannot be modified by operators or admins
-✅ **Auditable** - Full attestation reports for every request
-
-## 📖 Usage Examples
-
-### Basic Attestation Verification
-
-```bash
-# Verify default Phala confidential model
-python3 attestation_verifier.py
-
-# Verify specific model
-python3 attestation_verifier.py --model phala/qwen-2.5-7b-instruct
+event ProofStored(bytes32 indexed quoteHash, address indexed signingAddress, bool isValid, ...)
 ```
 
-### Signature Verification with Custom Model
-
-```bash
-export API_KEY=sk-your-api-key-here
-python3 signature_verifier.py --model phala/deepseek-chat-v3-0324
-```
-
-### Programmatic Usage
-
-```python
-from attestation_verifier import fetch_report, check_tdx_quote, check_gpu, check_report_data
-import secrets
-
-# Generate fresh nonce
-nonce = secrets.token_hex(32)
-
-# Fetch attestation
-attestation = fetch_report("phala/deepseek-chat-v3-0324", nonce)
-
-# Verify all components
-intel_result = check_tdx_quote(attestation)
-check_report_data(attestation, nonce, intel_result)
-check_gpu(attestation, nonce)
-```
-
-## 🔗 Integration
-
-### With RedPill Gateway
-
-These verifiers work with [RedPill Gateway](https://github.com/redpill-ai/redpill-gateway) attestation endpoints:
-
-- `GET /v1/attestation/report` - Get TEE attestation
-- `GET /v1/signature/{chat_id}` - Get response signature
-
-### With RedPill Chat
-
-[RedPill Chat](https://github.com/redpill-ai/redpill-chat) uses these verification methods to display TEE status in the UI.
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Development Setup
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Test with both verifiers
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
-
-## 📝 License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## 🙏 Attribution
-
-Built with:
-- [NVIDIA NRAS](https://nras.attestation.nvidia.com) - GPU TEE attestation service
-- [Intel TDX](https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html) - CPU TEE technology
-- [Sigstore](https://www.sigstore.dev/) - Container supply chain verification
-
-Powered by [RedPill Gateway](https://github.com/redpill-ai/redpill-gateway) and [Phala Network](https://phala.network) TEE infrastructure.
-
-## 🔗 Links
+## Links
 
 - **Website**: https://redpill.ai
-- **Documentation**: https://docs.redpill.ai
+- **Docs**: https://docs.phala.com/phala-cloud/confidential-ai/verify/verify-signature
 - **Gateway**: https://github.com/redpill-ai/redpill-gateway
-- **Chat**: https://github.com/redpill-ai/redpill-chat
-- **Support**: support@redpill.ai
+- **Quote Explorer**: https://github.com/Phala-Network/ra-quote-explorer
 
-## 📚 Additional Resources
+## License
 
-- [RedPill Attestation Guide](https://docs.redpill.ai/confidential-ai/attestation)
-- [RedPill Verification Guide](https://docs.redpill.ai/confidential-ai/verification)
-- [TEE-Protected Gateway Architecture](https://docs.redpill.ai/concepts/tee-protected-gateway)
-- [NVIDIA Confidential Computing](https://www.nvidia.com/en-us/data-center/solutions/confidential-computing/)
-- [Intel TDX Documentation](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-trust-domain-extensions.html)
-
----
-
-**Built with 💜 by the RedPill team** • *Verifying AI privacy, one attestation at a time.*
+MIT
