@@ -1,30 +1,20 @@
-// Core verification functions
-export {
-  fetchReport,
-  checkTdxQuote,
-  checkReportData,
-  checkGpu,
-  checkCompose,
-  checkSigstore,
-  verifyOnchain,
-  verifyAttestation,
-} from './attestation.js'
+// Main API
+export { verify, verifyModel } from './verify.js'
+export type { VerifyOptions, VerifyResult, VerifyModelOptions, VerifyModelResult } from './verify.js'
 
-// Signature verification
-export {
-  chat,
-  fetchSignature,
-  recoverSigner,
-  verifyResponse,
-  verifySignature,
-} from './signature.js'
+// Provider detection
+export { detectProvider, getPrimaryProvider, detectProviderFromAttestation } from './providers/detect.js'
+export type { ProviderType, ModelInfo } from './providers/detect.js'
 
-// On-chain proof storage
-export {
-  verifyOnchainFull,
-  storeProof,
-  lookupProof,
-} from './onchain.js'
+// Verifiers — cloud API (light mode)
+export { checkTdxQuote, checkReportData, checkGpu, checkCompose, checkSigstore } from './verifiers/cloud-api.js'
+
+// Verifiers — dstack (deep mode)
+export { isDstackAvailable, verifyWithDstack } from './verifiers/dstack.js'
+export type { DstackResult, DstackVerifierOptions } from './verifiers/dstack.js'
+
+// Verifiers — on-chain
+export { verifyOnchain, storeProof, lookupProof } from './verifiers/onchain.js'
 
 // Utilities
 export { sha256, randomNonce, decodeJwtPayload, selectAttestation } from './utils.js'
@@ -38,6 +28,11 @@ export type {
   RawAttestation,
   TdxQuote,
   TdxQuoteBody,
+  TdxResult,
+  ReportDataResult,
+  GpuResult,
+  ComposeResult,
+  SigstoreLink,
   SignaturePayload,
   AttestationResult,
   SignatureResult,
@@ -46,10 +41,4 @@ export type {
   StoreProofResult,
   NetworkConfig,
   NetworkKey,
-  VerifyAttestationOptions,
-  VerifyResponseOptions,
-  VerifySignatureOptions,
-  VerifyOnchainOptions,
-  StoreProofOptions,
-  LookupProofOptions,
 } from './types.js'

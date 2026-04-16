@@ -1,35 +1,47 @@
 import type { Address, Hex } from 'viem'
-import { verifyAttestation, verifyResponse, verifySignature, verifyOnchainFull, storeProof, lookupProof } from '../src/index.js'
+import {
+  verify,
+  verifyModel,
+  isDstackAvailable,
+  storeProof as storeProofOnchain,
+  lookupProof as lookupProofOnchain,
+} from '../src/index.js'
 import type { NetworkKey } from '../src/types.js'
+import type { VerifyModelResult } from '../src/verify.js'
 
 const HELP = `
-redpill-verifier — Cryptographic verification for RedPill Confidential AI
+redpill-verifier — Verify Confidential AI responses from RedPill / Phala
 
 Commands:
-  attestation   Verify TEE attestation (no API key needed)
-  verify        Verify an existing chat response by chatId (requires --api-key --chat-id)
-  signature     Demo: make a chat call + verify signature (requires --api-key)
-  onchain       Verify TDX quote on-chain via Automata DCAP
-  store         Store proof on-chain (requires --private-key)
-  lookup        Look up a stored proof by quote hash
+  verify <chatId>     Verify an existing chat response (the main command)
+  attestation         Verify TEE attestation for a model (no API key needed)
+  store               Store proof on-chain (requires --private-key)
+  lookup              Look up a stored proof by quote hash
 
 Options:
   --model MODEL          Model to verify (default: phala/gpt-oss-120b)
+  --api-key KEY          RedPill API key
+  --deep                 Force deep verification (dstack-verifier Docker)
+  --light                Force light verification (cloud APIs only, no Docker)
   --network NETWORK      automata-mainnet|automata-testnet|sepolia|holesky
   --skip-onchain         Skip on-chain DCAP verification
-  --api-key KEY          RedPill API key (for verify/signature commands)
-  --chat-id ID           Chat completion ID to verify (for verify command)
-  --private-key KEY      Ethereum private key (for store command)
+  --private-key KEY      Ethereum private key (for store)
   --proof-store ADDR     RedpillProofStore contract address
   --quote-hash HASH      Quote hash to look up
   --help                 Show this help
 
 Examples:
-  npx redpill-verifier attestation
-  npx redpill-verifier signature --api-key sk-xxx
-  npx redpill-verifier onchain --network sepolia
+  # Verify your chat response (main use case)
+  npx redpill-verifier verify chatcmpl-xxx --api-key sk-xxx --model phala/gpt-oss-120b
+
+  # Check model attestation (no API key)
+  npx redpill-verifier attestation --model phala/gpt-oss-120b
+
+  # Deep mode (requires Docker running dstack-verifier)
+  npx redpill-verifier attestation --model phala/gpt-oss-20b --deep
+
+  # Store proof on Sepolia
   npx redpill-verifier store --private-key 0x... --proof-store 0x... --network sepolia
-  npx redpill-verifier lookup --quote-hash 0x... --proof-store 0x... --network sepolia
 `
 
 function parseArgs(argv: string[]) {
@@ -40,12 +52,8 @@ function parseArgs(argv: string[]) {
     if (arg.startsWith('--')) {
       const key = arg.slice(2)
       const next = argv[i + 1]
-      if (next && !next.startsWith('--')) {
-        args[key] = next
-        i++
-      } else {
-        args[key] = true
-      }
+      if (next && !next.startsWith('--')) { args[key] = next; i++ }
+      else { args[key] = true }
     } else {
       positional.push(arg)
     }
@@ -61,243 +69,193 @@ function step(n: number, title: string) {
   console.log(`\n\x1b[1m\x1b[94m[Step ${n}]\x1b[0m \x1b[1m${title}\x1b[0m`)
 }
 
-async function cmdAttestation(args: Record<string, string | boolean>) {
-  const model = (args.model as string) ?? 'phala/gpt-oss-120b'
-  const network = (args.network as NetworkKey) ?? 'automata-mainnet'
-  const skipOnchain = !!args['skip-onchain']
+function printModelResult(r: VerifyModelResult, startStep = 1) {
+  let s = startStep
 
-  console.log(`\n\x1b[1m\x1b[96mRedPill TEE Attestation Verification\x1b[0m`)
-  console.log(`  Model:   ${model}`)
-  if (!skipOnchain) console.log(`  Network: ${network}`)
+  // Light mode
+  step(s++, 'Intel TDX Quote')
+  r.light.tdx?.verified ? ok('TDX quote verified') : fail(`TDX failed: ${r.light.tdx?.message ?? 'no quote'}`)
 
-  const result = await verifyAttestation({ model, network, skipOnchain })
-
-  step(1, 'Intel TDX Quote')
-  result.tdx.verified ? ok('TDX quote verified') : fail(`TDX verification failed: ${result.tdx.message}`)
-
-  step(2, 'TDX Report Data')
-  if (result.reportData) {
-    result.reportData.bindsAddress ? ok('Report data binds signing address') : fail('Report data does NOT bind signing address')
-    result.reportData.embedsNonce ? ok('Report data embeds request nonce') : fail('Report data nonce mismatch')
-    info(`Signing algorithm: ${result.reportData.signingAlgo}`)
-  } else {
-    warn('Could not extract report data')
+  if (r.light.reportData) {
+    step(s++, 'Report Data Binding')
+    r.light.reportData.bindsAddress ? ok('Signing key bound to TEE hardware') : fail('Key binding failed')
+    r.light.reportData.embedsNonce ? ok('Nonce embedded in report data') : fail('Nonce mismatch')
   }
 
-  step(3, 'GPU Attestation')
-  if (result.gpu) {
-    result.gpu.nonceMatches ? ok('GPU nonce matches') : fail('GPU nonce mismatch')
-    ok(`NVIDIA verdict: ${result.gpu.verdict}`)
-  } else {
-    info('No GPU attestation (model may not use GPU TEE)')
+  if (r.light.gpu) {
+    step(s++, 'GPU Attestation')
+    r.light.gpu.nonceMatches ? ok('GPU nonce matches') : fail('GPU nonce mismatch')
+    ok(`NVIDIA verdict: ${r.light.gpu.verdict}`)
   }
 
-  if (result.compose) {
-    step(4, 'Compose Manifest')
-    result.compose.hashMatches ? ok('Compose hash matches mr_config') : fail('Compose hash mismatch')
+  if (r.light.compose) {
+    step(s++, 'Compose Manifest')
+    r.light.compose.hashMatches ? ok('Compose hash matches mr_config') : fail('Compose hash mismatch')
   }
 
-  if (result.sigstore.length > 0) {
-    step(5, 'Sigstore Provenance')
-    for (const link of result.sigstore) {
-      link.accessible ? ok(`${link.url.split('sha256:')[1]?.slice(0, 16)}... (HTTP ${link.status})`) : warn(`${link.url.split('sha256:')[1]?.slice(0, 16)}... (HTTP ${link.status})`)
+  if (r.light.sigstore.length > 0) {
+    step(s++, 'Sigstore Provenance')
+    for (const link of r.light.sigstore) {
+      const digest = link.url.split('sha256:')[1]?.slice(0, 16) ?? ''
+      link.accessible ? ok(`${digest}... (HTTP ${link.status})`) : warn(`${digest}... (HTTP ${link.status})`)
     }
   }
 
-  if (result.onchain) {
-    step(6, 'On-Chain DCAP Verification')
-    result.onchain.verified
-      ? ok(`On-chain DCAP: \x1b[92m\x1b[1mVALID\x1b[0m`)
-      : fail('On-chain DCAP: INVALID')
-    info(`Contract: ${result.onchain.contract}`)
-    info(`Explorer: ${result.onchain.explorer}`)
+  // Deep mode
+  if (r.deep) {
+    step(s++, `Deep Verification (dstack)`)
+    if (!r.deep.available) {
+      info('dstack-verifier not available — skipped (run: docker compose up -d)')
+    } else if (r.deep.components.length === 0) {
+      warn('No components verified')
+    } else {
+      for (const c of r.deep.components) {
+        const label = `${c.name}: quote=${c.result.quoteVerified} eventLog=${c.result.eventLogVerified} osImage=${c.result.osImageHashVerified}`
+        c.result.isValid ? ok(label) : fail(`${label} — ${c.result.reason}`)
+      }
+      r.deep.allValid ? ok('All components valid') : fail('Some components failed')
+    }
   }
 
-  console.log(`\n  Signing address: ${result.signingAddress}`)
-  console.log(`  Nonce: ${result.nonce}\n`)
+  // On-chain
+  if (r.onchain) {
+    step(s++, 'On-Chain DCAP')
+    r.onchain.verified ? ok(`VALID on ${r.onchain.network}`) : fail('INVALID')
+    info(`Contract: ${r.onchain.contract}`)
+  }
+
+  // Errors
+  if (r.errors.length > 0) {
+    console.log(`\n  \x1b[93mWarnings:\x1b[0m`)
+    for (const e of r.errors) warn(e)
+  }
+
+  return s
 }
 
-async function cmdSignature(args: Record<string, string | boolean>) {
+async function cmdVerify(args: Record<string, string | boolean>, positional: string[]) {
+  const chatId = positional[1]
   const apiKey = args['api-key'] as string
-  if (!apiKey) { console.error('Error: --api-key is required'); process.exit(1) }
+  if (!chatId) { console.error('Error: chatId required. Usage: verify <chatId> --api-key sk-xxx'); process.exit(1) }
+  if (!apiKey) { console.error('Error: --api-key required'); process.exit(1) }
 
   const model = (args.model as string) ?? 'phala/gpt-oss-120b'
-  const network = (args.network as NetworkKey) ?? 'automata-mainnet'
+  const deep = args.deep === true ? true : args.light === true ? false : undefined
 
-  console.log(`\n\x1b[1m\x1b[96mRedPill Signature Verification\x1b[0m`)
-  console.log(`  Model: ${model}`)
-
-  const result = await verifySignature({
-    model,
-    apiKey,
-    network,
-    skipOnchain: !!args['skip-onchain'],
-  })
-
-  step(1, 'Chat Completion')
-  ok(`Chat ID: ${result.chatId}`)
-
-  step(2, 'ECDSA Signature')
-  result.requestHashMatch ? ok('Request hash matches') : warn('Request hash differs (gateway may rewrite model name)')
-  result.responseHashMatch ? ok('Response hash matches') : fail('Response hash mismatch')
-  result.signatureValid
-    ? ok(`Recovered signer ${result.recoveredAddress.slice(0, 10)}... matches`)
-    : fail(`Signer mismatch: ${result.recoveredAddress}`)
-
-  if (result.attestation) {
-    step(3, 'TEE Attestation')
-    result.attestation.tdx.verified ? ok('TDX quote verified') : fail('TDX failed')
-    if (result.attestation.reportData) {
-      result.attestation.reportData.bindsAddress ? ok('Report data binds signing address') : fail('Binding failed')
-    }
-    if (result.attestation.gpu) {
-      ok(`GPU verdict: ${result.attestation.gpu.verdict}`)
-    }
-    if (result.attestation.onchain) {
-      result.attestation.onchain.verified ? ok('On-chain DCAP: VALID') : fail('On-chain DCAP: INVALID')
-    }
-  }
-  console.log()
-}
-
-async function cmdVerify(args: Record<string, string | boolean>) {
-  const apiKey = args['api-key'] as string
-  const chatId = args['chat-id'] as string
-  if (!apiKey) { console.error('Error: --api-key is required'); process.exit(1) }
-  if (!chatId) { console.error('Error: --chat-id is required'); process.exit(1) }
-
-  const model = (args.model as string) ?? 'phala/gpt-oss-120b'
-  const network = (args.network as NetworkKey) ?? 'automata-mainnet'
-
-  console.log(`\n\x1b[1m\x1b[96mVerify Existing Chat Response\x1b[0m`)
+  console.log(`\n\x1b[1m\x1b[96mRedPill Verifier — Verify Chat Response\x1b[0m`)
   console.log(`  Chat ID: ${chatId}`)
   console.log(`  Model:   ${model}`)
 
-  const result = await verifyResponse({
-    chatId,
+  const result = await verify(chatId, {
     model,
     apiKey,
-    network,
+    deep,
+    network: args.network as NetworkKey,
     skipOnchain: !!args['skip-onchain'],
   })
 
   step(1, 'ECDSA Signature')
-  result.signatureValid
+  result.signature.valid
     ? ok(`Signature valid — signer: ${result.signingAddress}`)
-    : fail(`Signer mismatch: recovered ${result.recoveredAddress}, expected ${result.signingAddress}`)
+    : fail(`Signer mismatch: recovered ${result.signature.recoveredAddress}`)
 
-  if (result.attestation) {
-    step(2, 'TEE Attestation')
-    result.attestation.tdx.verified ? ok('TDX quote verified') : fail('TDX failed')
-    if (result.attestation.reportData) {
-      result.attestation.reportData.bindsAddress ? ok('Signing key bound to TEE hardware') : fail('Key binding failed')
-    }
-    if (result.attestation.gpu) {
-      ok(`GPU attestation: ${result.attestation.gpu.verdict}`)
-    }
-    if (result.attestation.onchain) {
-      result.attestation.onchain.verified ? ok('On-chain DCAP: VALID') : fail('On-chain DCAP: INVALID')
-    }
-  }
-  console.log()
+  printModelResult(result, 2)
+
+  console.log(`\n  \x1b[1m${result.verified ? '\x1b[92mVERIFIED' : '\x1b[91mNOT VERIFIED'}\x1b[0m`)
+  console.log(`  Provider: ${result.provider} | Hardware: ${result.hardware.join(', ') || 'unknown'}\n`)
 }
 
-async function cmdOnchain(args: Record<string, string | boolean>) {
+async function cmdAttestation(args: Record<string, string | boolean>) {
   const model = (args.model as string) ?? 'phala/gpt-oss-120b'
-  const network = (args.network as NetworkKey) ?? 'automata-mainnet'
+  const deep = args.deep === true ? true : args.light === true ? false : undefined
 
-  console.log(`\n\x1b[1m\x1b[96mOn-Chain DCAP Verification\x1b[0m`)
-  info(`Model: ${model}`)
-  info(`Network: ${network}`)
+  console.log(`\n\x1b[1m\x1b[96mRedPill Verifier — TEE Attestation\x1b[0m`)
+  console.log(`  Model: ${model}`)
 
-  const result = await verifyOnchainFull({ model, network })
+  const result = await verifyModel({
+    model,
+    deep,
+    network: args.network as NetworkKey,
+    skipOnchain: !!args['skip-onchain'],
+  })
 
-  result.verified
-    ? ok(`On-chain DCAP: \x1b[92m\x1b[1mVALID\x1b[0m`)
-    : fail('On-chain DCAP: INVALID')
-  info(`Quote hash: ${result.quoteHash}`)
-  info(`Contract: ${result.contract}`)
-  info(`Explorer: ${result.explorer}`)
-  console.log()
+  printModelResult(result)
+
+  console.log(`\n  \x1b[1m${result.verified ? '\x1b[92mVERIFIED' : '\x1b[91mNOT VERIFIED'}\x1b[0m`)
+  console.log(`  Provider: ${result.provider} | Hardware: ${result.hardware.join(', ') || 'unknown'}`)
+  console.log(`  Signer: ${result.signingAddress}\n`)
 }
 
 async function cmdStore(args: Record<string, string | boolean>) {
   const privateKey = args['private-key'] as string
   const proofStoreAddr = args['proof-store'] as string
-  if (!privateKey) { console.error('Error: --private-key is required'); process.exit(1) }
-  if (!proofStoreAddr) { console.error('Error: --proof-store is required'); process.exit(1) }
+  if (!privateKey) { console.error('Error: --private-key required'); process.exit(1) }
+  if (!proofStoreAddr) { console.error('Error: --proof-store required'); process.exit(1) }
 
   const model = (args.model as string) ?? 'phala/gpt-oss-120b'
-  const network = (args.network as NetworkKey) ?? 'automata-mainnet'
+  const network = (args.network as NetworkKey) ?? 'sepolia'
 
   console.log(`\n\x1b[1m\x1b[96mStore Proof On-Chain\x1b[0m`)
 
-  const result = await storeProof({
-    model,
-    network,
-    proofStore: proofStoreAddr as Address,
-    privateKey: privateKey as Hex,
-  })
+  // First verify to get the attestation
+  const result = await verifyModel({ model, skipOnchain: true, deep: false })
+  if (!result.signingAddress || !result.light.tdx?.quote) {
+    console.error('Error: could not get attestation'); process.exit(1)
+  }
 
-  result.isValid ? ok('Proof stored successfully') : fail('Transaction reverted')
-  info(`Tx hash: ${result.txHash}`)
-  info(`Quote hash: ${result.quoteHash}`)
-  info(`Block: ${result.blockNumber}`)
-  info(`Gas used: ${result.gasUsed}`)
-  info(`Explorer: ${result.explorer}`)
+  // Get the intel_quote from the attestation (re-fetch since we need the raw hex)
+  const { randomNonce, selectAttestation } = await import('../src/utils.js')
+  const nonce = randomNonce(32)
+  const { API_BASE } = await import('../src/constants.js')
+  const report = await (await fetch(`${API_BASE}/v1/attestation/report?model=${encodeURIComponent(model)}&nonce=${nonce}`)).json()
+  const att = selectAttestation(report)
+
+  const tx = await storeProofOnchain(
+    att.intel_quote,
+    result.signingAddress as Address,
+    proofStoreAddr as Address,
+    privateKey as Hex,
+    network,
+  )
+
+  tx.isValid ? ok('Proof stored') : fail('Transaction reverted')
+  info(`Tx: ${tx.explorer}`)
+  info(`Quote hash: ${tx.quoteHash}`)
+  info(`Gas: ${tx.gasUsed}`)
   console.log()
 }
 
 async function cmdLookup(args: Record<string, string | boolean>) {
   const quoteHash = args['quote-hash'] as string
   const proofStoreAddr = args['proof-store'] as string
-  if (!quoteHash) { console.error('Error: --quote-hash is required'); process.exit(1) }
-  if (!proofStoreAddr) { console.error('Error: --proof-store is required'); process.exit(1) }
+  if (!quoteHash) { console.error('Error: --quote-hash required'); process.exit(1) }
+  if (!proofStoreAddr) { console.error('Error: --proof-store required'); process.exit(1) }
 
-  const network = (args.network as NetworkKey) ?? 'automata-mainnet'
+  const network = (args.network as NetworkKey) ?? 'sepolia'
+  const proof = await lookupProofOnchain(quoteHash as Hex, proofStoreAddr as Address, network)
 
-  const proof = await lookupProof({
-    quoteHash: quoteHash as Hex,
-    proofStore: proofStoreAddr as Address,
-    network,
-  })
-
-  if (!proof) {
-    console.log(`No proof found for quote hash ${quoteHash}`)
-    return
-  }
+  if (!proof) { console.log(`No proof found for ${quoteHash}`); return }
 
   console.log(`\nProof found:`)
-  console.log(`  Quote hash:       ${proof.quoteHash}`)
-  console.log(`  Signing address:  ${proof.signingAddress}`)
-  console.log(`  Valid:            ${proof.isValid}`)
-  console.log(`  Timestamp:        ${proof.timestamp}`)
-  console.log(`  Block number:     ${proof.blockNumber}`)
-  console.log(`  Submitter:        ${proof.submitter}`)
-  console.log()
+  console.log(`  Quote hash:      ${proof.quoteHash}`)
+  console.log(`  Signing address: ${proof.signingAddress}`)
+  console.log(`  Valid:           ${proof.isValid}`)
+  console.log(`  Timestamp:       ${proof.timestamp}`)
+  console.log(`  Block:           ${proof.blockNumber}`)
+  console.log(`  Submitter:       ${proof.submitter}\n`)
 }
 
 async function main() {
   const { args, positional } = parseArgs(process.argv.slice(2))
+  if (args.help || positional.length === 0) { console.log(HELP); process.exit(0) }
 
-  if (args.help || positional.length === 0) {
-    console.log(HELP)
-    process.exit(0)
-  }
-
-  const command = positional[0]
   try {
-    switch (command) {
+    switch (positional[0]) {
+      case 'verify': await cmdVerify(args, positional); break
       case 'attestation': await cmdAttestation(args); break
-      case 'verify': await cmdVerify(args); break
-      case 'signature': await cmdSignature(args); break
-      case 'onchain': await cmdOnchain(args); break
       case 'store': await cmdStore(args); break
       case 'lookup': await cmdLookup(args); break
-      default:
-        console.error(`Unknown command: ${command}`)
-        console.log(HELP)
-        process.exit(1)
+      default: console.error(`Unknown: ${positional[0]}`); console.log(HELP); process.exit(1)
     }
   } catch (err) {
     console.error(`\n\x1b[91mError:\x1b[0m ${err instanceof Error ? err.message : err}`)

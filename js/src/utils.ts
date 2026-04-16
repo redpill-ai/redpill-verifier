@@ -51,8 +51,8 @@ export function selectAttestation(
         )
         if (match) return match
       }
-      // Otherwise return first with signing_address
-      const first = items.find((a) => typeof a === 'object' && 'signing_address' in a)
+      // Otherwise return first with signing_address or intel_quote
+      const first = items.find((a) => typeof a === 'object' && ('signing_address' in a || 'intel_quote' in a))
       if (first) return first
     }
   }
